@@ -1,0 +1,49 @@
+spring:
+  application:
+    name: agent-java
+  config:
+    import: optional:file:.env[.properties]
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/agent}
+    username: ${DB_USER:agent}
+    password: ${DB_PASSWORD:agent}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+
+application:
+  favorites:
+    max-per-user: 50
+    # Übergangslösung, solange es keine Anmeldung gibt: Alle Anfragen laufen unter dieser Benutzer-ID.
+    # Wird durch die ID aus dem Login (z. B. JWT-Claim "sub") ersetzt, siehe DevUserIdResolver.
+    dev-user-id: dev-user
+  agent:
+    api-key: ${ANTHROPIC_API_KEY}
+    # Nur diese Endpunkte darf Claude aufrufen. Die URLs zeigen vorerst auf die Mock-Endpunkte
+    # (MockClubController) und werden später durch die echten Club-Endpunkte ersetzt.
+    endpoints:
+      - id: list_courts
+        description: >
+          Liefert für ein Datum alle Courts des Clubs mit ihren Zeitfenstern und ob diese frei oder belegt sind.
+          Zu verwenden bei Fragen nach freien oder belegten Courts.
+        method: GET
+        url: http://localhost:8080/mock/courts?date={date}
+        params:
+          - name: date
+            type: date
+            description: Das Datum im Format yyyy-MM-dd
+            required: true
+      - id: list_bookings
+        description: >
+          Liefert für ein Datum alle Buchungen im Club (wer hat welchen Court zu welcher Zeit gebucht).
+          Zu verwenden bei Fragen nach bestehenden Buchungen oder Reservierungen.
+        method: GET
+        url: http://localhost:8080/mock/bookings?date={date}
+        params:
+          - name: date
+            type: date
+            description: Das Datum im Format yyyy-MM-dd
+            required: true

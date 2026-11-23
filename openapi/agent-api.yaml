@@ -1,0 +1,558 @@
+openapi: 3.1.0
+
+info:
+  title: Agent API
+  version: 0.1.0-entwurf
+  description: |
+    **ENTWURF zur Abstimmung. Noch nichts davon ist umgesetzt, außer den Favoriten (siehe unten).**
+
+    Der Vertrag zwischen dem Backend und allen Clients (Web, iPhone, Android).
+
+    ## Rollen
+    - **Claude** übersetzt nur die Frage des Benutzers in einen oder mehrere Tool-Aufrufe (Tool und Parameter).
+      Die Daten der Endpunkte gehen nie an Claude zurück, es gibt nur noch eine Claude-Runde pro Anfrage.
+    - **Das Backend** prüft die Aufrufe gegen den Katalog der erlaubten Endpunkte, ruft sie auf und **mappt**
+      die rohe Antwort jedes Endpunkts auf das feste DTO dieses Vertrags. Ändert sich ein Endpunkt, ändert sich
+      nur das Mapping, nicht der Client.
+    - **Der Client** stellt die Ergebnisse selbst dar. Das Backend liefert keine Texte oder Kacheln zur Darstellung.
+
+    ## Antwort von `POST /api/v1/agent`
+    Immer ein JSON-Objekt (kein Stream). `status` unterscheidet:
+    - `ok`: Mindestens ein Tool wurde aufgerufen. `results` enthält ein Element pro Aufruf, in der Reihenfolge von
+      Claude. Jedes Element hat sein eigenes `status` (`ok` oder `error`), damit ein ausgefallener Endpunkt die
+      anderen Ergebnisse nicht verdeckt.
+    - `message`: Es wurde kein Tool aufgerufen, weil eine Angabe fehlt (Rückfrage) oder kein Endpunkt zur Frage passt.
+      `message` ist ein kurzer Text von Claude in der Sprache der Frage.
+
+    Fehler der Anfrage selbst und Ausfälle (Claude nicht erreichbar) sind HTTP-Fehler mit `application/problem+json`.
+
+    ## Neues Tool hinzufügen
+    1. Argumente-Schema und Daten-Schema anlegen (wie `ListCourtsArguments` und `CourtsData`).
+    2. Ein Ergebnis-Schema anlegen (wie `CourtsResult`) und es in `ToolResult` unter `oneOf` und `mapping` eintragen.
+    3. Im Backend den Endpunkt in den Katalog aufnehmen und das Mapping auf das neue DTO schreiben.
+
+    ## Umsetzungsstand
+    - **Backend umgesetzt** und gegen diesen Vertrag geprüft: `POST /api/v1/agent` mit nur einer Claude-Runde,
+      ohne Thinking und ohne Streaming, die Favoriten unter `/api/v1/favorites`, alle Fehler als
+      `application/problem+json` und die Längengrenze von 1000 Zeichen.
+    - **Web-Client noch nicht angepasst.** Die bestehende Seite ruft noch die alten Pfade und den Stream auf und
+      funktioniert deshalb vorerst nicht.
+    - Bei `invalid_arguments` fehlt `arguments`, wenn Claude keinen gültigen Parameter geliefert hat.
+
+    ## Entschieden
+    - Alle Pfade beginnen mit `/api/v1`.
+    - Zeitfenster haben `start` und `end` (Format HH:mm).
+    - Die Frage und ein Favorit sind höchstens 1000 Zeichen lang.
+
+    ## Bewusst später
+    - **Authentifizierung.** Vorerst gibt es keine, alle Endpunkte sind offen. Die Favoriten gehören dann einem festen
+      Test-Benutzer (`DevUserIdResolver`), alle Besucher sehen dieselben. Kommt die Anmeldung, wird der Vertrag um ein
+      Sicherheitsschema und die Antwort 401 ergänzt. Die Benutzer-ID kommt dann aus dem Token, nie aus dem Body.
+    - **Rate-Limit** pro Benutzer (HTTP 429).
+    - **Strengere Typen** für `ToolResult`: `data` und `error` sind beide optional, ein TypeScript-Client braucht
+      deshalb ein `data!`. Strenger wäre je eine Variante pro Tool für `ok` und eine gemeinsame `ToolFailure`, dann
+      reicht der Diskriminator `tool` aber nicht mehr (Swift und Kotlin).
+
+servers:
+  - url: http://localhost:8080
+    description: Lokale Entwicklung
+
+# Vorerst keine Authentifizierung (siehe "Bewusst später" oben). Das leere Array sagt ausdrücklich,
+# dass für die Endpunkte kein Schutz verlangt wird.
+security: []
+
+tags:
+  - name: Agent
+    description: Frage in natürlicher Sprache stellen
+  - name: Favoriten
+    description: Häufig gestellte Fragen pro Benutzer speichern (bereits umgesetzt)
+
+paths:
+  /api/v1/agent:
+    post:
+      tags: [Agent]
+      operationId: askAgent
+      summary: Frage stellen
+      description: |
+        Claude wählt anhand der Frage die passenden Tools und Parameter. Das Backend ruft die Endpunkte auf
+        und liefert die gemappten Ergebnisse. Typische Dauer: wenige Sekunden. Die erste Anfrage nach dem
+        Start des Servers kann deutlich länger dauern.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentRequest'
+            example:
+              input: Welche Courts sind morgen frei?
+      responses:
+        '200':
+          description: Antwort mit Ergebnissen (`ok`) oder mit einer Rückfrage bzw. einem Hinweis (`message`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+              examples:
+                ok:
+                  summary: Ein Tool aufgerufen
+                  value:
+                    status: ok
+                    requestId: a4485373
+                    durationMs: 2840
+                    results:
+                      - tool: list_courts
+                        arguments:
+                          date: '2026-11-23'
+                        status: ok
+                        data:
+                          date: '2026-11-23'
+                          courts:
+                            - court: Court 1
+                              slots:
+                                - { start: '17:00', end: '18:00', free: false }
+                                - { start: '18:00', end: '19:00', free: true }
+                            - court: Court 2
+                              slots:
+                                - { start: '17:00', end: '18:00', free: true }
+                                - { start: '18:00', end: '19:00', free: false }
+                teilweise-fehler:
+                  summary: Zwei Tools, eines ist ausgefallen
+                  value:
+                    status: ok
+                    requestId: 7c01e9d2
+                    durationMs: 3120
+                    results:
+                      - tool: list_courts
+                        arguments:
+                          date: '2026-11-23'
+                        status: ok
+                        data:
+                          date: '2026-11-23'
+                          courts: []
+                      - tool: list_bookings
+                        arguments:
+                          date: '2026-11-23'
+                        status: error
+                        error:
+                          code: upstream_unavailable
+                          message: Der Endpunkt ist nicht erreichbar.
+                rueckfrage:
+                  summary: Es fehlt eine Angabe, kein Tool aufgerufen
+                  value:
+                    status: message
+                    requestId: 51be2a0c
+                    durationMs: 1710
+                    message: Für welches Datum soll ich die freien Courts suchen?
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '502':
+          description: Claude ist nicht erreichbar oder hat mit einem Fehler geantwortet. Die Anfrage kann wiederholt werden.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+              example:
+                type: about:blank
+                title: Bad Gateway
+                status: 502
+                detail: Die Anfrage konnte nicht beantwortet werden. Bitte versuche es erneut.
+                requestId: a4485373
+        '504':
+          description: Die Anfrage hat das Zeitlimit des Servers überschritten.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+
+  /api/v1/favorites:
+    get:
+      tags: [Favoriten]
+      operationId: listFavorites
+      summary: Favoriten des Benutzers
+      description: Zuletzt benutzte zuerst.
+      responses:
+        '200':
+          description: Die Favoriten des angemeldeten Benutzers, höchstens 50.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Favorite'
+    post:
+      tags: [Favoriten]
+      operationId: addFavorite
+      summary: Favorit speichern
+      description: |
+        Existiert der Text für den Benutzer schon, wird der bestehende Favorit zurückgegeben (kein Duplikat).
+        Der Text wird vorher von Leerzeichen am Anfang und Ende befreit.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FavoriteRequest'
+      responses:
+        '201':
+          description: Der gespeicherte oder bereits vorhandene Favorit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Favorite'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Der Benutzer hat die Höchstzahl von 50 Favoriten erreicht.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+
+  /api/v1/favorites/{id}:
+    delete:
+      tags: [Favoriten]
+      operationId: deleteFavorite
+      summary: Favorit löschen
+      parameters:
+        - $ref: '#/components/parameters/FavoriteId'
+      responses:
+        '204':
+          description: Gelöscht.
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/favorites/{id}/used:
+    post:
+      tags: [Favoriten]
+      operationId: markFavoriteUsed
+      summary: Favorit als benutzt markieren
+      description: Setzt den Zeitpunkt der letzten Nutzung, damit der Favorit in der Liste nach oben rückt.
+      parameters:
+        - $ref: '#/components/parameters/FavoriteId'
+      responses:
+        '204':
+          description: Markiert.
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+
+  parameters:
+    FavoriteId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+
+  responses:
+    BadRequest:
+      description: Die Anfrage ist ungültig (z. B. leerer Text).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          example:
+            type: about:blank
+            title: Bad Request
+            status: 400
+            detail: Die Anfrage ist ungültig.
+            errors:
+              - field: input
+                message: darf nicht leer sein
+    NotFound:
+      description: Es gibt keinen Favoriten mit dieser ID für diesen Benutzer.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    UnsupportedMediaType:
+      description: Der Content-Type muss `application/json` sein.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+
+  schemas:
+
+    # ---------------------------------------------------------------- Agent: Anfrage und Antwort
+
+    AgentRequest:
+      type: object
+      required: [input]
+      additionalProperties: false
+      properties:
+        input:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: Die Frage des Benutzers in natürlicher Sprache, höchstens 1000 Zeichen. Leer oder nur Leerzeichen ist ungültig.
+          examples: [Welche Courts sind morgen frei?]
+
+    AgentResponse:
+      description: Entweder Ergebnisse (`ok`) oder eine Nachricht (`message`). `status` ist der Diskriminator.
+      oneOf:
+        - $ref: '#/components/schemas/AgentOk'
+        - $ref: '#/components/schemas/AgentMessage'
+      discriminator:
+        propertyName: status
+        mapping:
+          ok: '#/components/schemas/AgentOk'
+          message: '#/components/schemas/AgentMessage'
+
+    AgentOk:
+      type: object
+      required: [status, requestId, durationMs, results]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        requestId:
+          $ref: '#/components/schemas/RequestId'
+        durationMs:
+          $ref: '#/components/schemas/DurationMs'
+        results:
+          type: array
+          minItems: 1
+          description: Ein Element pro Tool-Aufruf, in der Reihenfolge, in der Claude die Tools aufgerufen hat.
+          items:
+            $ref: '#/components/schemas/ToolResult'
+
+    AgentMessage:
+      type: object
+      required: [status, requestId, durationMs, message]
+      properties:
+        status:
+          type: string
+          enum: [message]
+        requestId:
+          $ref: '#/components/schemas/RequestId'
+        durationMs:
+          $ref: '#/components/schemas/DurationMs'
+        message:
+          type: string
+          description: |
+            Kurzer Text von Claude, in der Sprache der Frage: eine Rückfrage, wenn eine Angabe fehlt, oder der
+            Hinweis, dass die Frage mit den vorhandenen Endpunkten nicht beantwortet werden kann. Wird unverändert
+            angezeigt. Kein Markup, der Client darf ihn nicht als HTML interpretieren.
+
+    RequestId:
+      type: string
+      description: |
+        Kurze ID der Anfrage. Sie steht in jeder Logzeile des Servers (`anfrage=...`) und hilft bei der
+        Fehlersuche. Bei Fehlern wird sie auch im Problem-Objekt mitgegeben.
+      examples: [a4485373]
+
+    DurationMs:
+      type: integer
+      format: int64
+      minimum: 0
+      description: Dauer der gesamten Anfrage in Millisekunden, gemessen vom Eingang bis zum Ausgang des Controllers.
+
+    # ---------------------------------------------------------------- Agent: Tool-Ergebnisse
+
+    ToolResult:
+      description: Ergebnis eines Tool-Aufrufs. `tool` ist der Diskriminator und bestimmt die Typen von `arguments` und `data`.
+      oneOf:
+        - $ref: '#/components/schemas/CourtsResult'
+        - $ref: '#/components/schemas/BookingsResult'
+      discriminator:
+        propertyName: tool
+        mapping:
+          list_courts: '#/components/schemas/CourtsResult'
+          list_bookings: '#/components/schemas/BookingsResult'
+
+    ToolStatus:
+      type: string
+      enum: [ok, error]
+      description: Bei `ok` ist `data` gesetzt, bei `error` ist `error` gesetzt.
+
+    ToolError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [invalid_arguments, upstream_unavailable, upstream_error]
+          description: |
+            - `invalid_arguments`: Claude hat ungültige Parameter geliefert (Typ, Pflichtfeld, unbekannter Parameter).
+            - `upstream_unavailable`: Der Endpunkt war nicht erreichbar oder zu langsam.
+            - `upstream_error`: Der Endpunkt hat mit einem Fehlerstatus oder einer unlesbaren Antwort geantwortet.
+        message:
+          type: string
+          description: Kurze Meldung für den Benutzer. Enthält keine technischen Details, keine URLs und keine Parameterwerte.
+
+    CourtsResult:
+      type: object
+      required: [tool, status]
+      properties:
+        tool:
+          type: string
+          enum: [list_courts]
+        arguments:
+          $ref: '#/components/schemas/ListCourtsArguments'
+          description: Die von Claude gewählten Parameter. Fehlt bei `invalid_arguments`, wenn Claude keinen gültigen Parameter geliefert hat.
+        status:
+          $ref: '#/components/schemas/ToolStatus'
+        data:
+          $ref: '#/components/schemas/CourtsData'
+        error:
+          $ref: '#/components/schemas/ToolError'
+
+    BookingsResult:
+      type: object
+      required: [tool, status]
+      properties:
+        tool:
+          type: string
+          enum: [list_bookings]
+        arguments:
+          $ref: '#/components/schemas/ListBookingsArguments'
+          description: Die von Claude gewählten Parameter. Fehlt bei `invalid_arguments`, wenn Claude keinen gültigen Parameter geliefert hat.
+        status:
+          $ref: '#/components/schemas/ToolStatus'
+        data:
+          $ref: '#/components/schemas/BookingsData'
+        error:
+          $ref: '#/components/schemas/ToolError'
+
+    ListCourtsArguments:
+      type: object
+      required: [date]
+      description: Die Parameter, die Claude für `list_courts` gewählt hat (so aufgerufen, nach Prüfung durch das Backend).
+      properties:
+        date:
+          type: string
+          format: date
+
+    ListBookingsArguments:
+      type: object
+      required: [date]
+      description: Die Parameter, die Claude für `list_bookings` gewählt hat.
+      properties:
+        date:
+          type: string
+          format: date
+
+    CourtsData:
+      type: object
+      required: [date, courts]
+      description: Alle Courts mit ihren Zeitfenstern und ob diese frei sind.
+      properties:
+        date:
+          type: string
+          format: date
+        courts:
+          type: array
+          items:
+            type: object
+            required: [court, slots]
+            properties:
+              court:
+                type: string
+                examples: [Court 1]
+              slots:
+                type: array
+                items:
+                  type: object
+                  required: [start, end, free]
+                  properties:
+                    start:
+                      $ref: '#/components/schemas/TimeOfDay'
+                    end:
+                      $ref: '#/components/schemas/TimeOfDay'
+                    free:
+                      type: boolean
+
+    BookingsData:
+      type: object
+      required: [date, bookings]
+      description: Alle Buchungen eines Tages.
+      properties:
+        date:
+          type: string
+          format: date
+        bookings:
+          type: array
+          items:
+            type: object
+            required: [court, start, end, member]
+            properties:
+              court:
+                type: string
+                examples: [Court 2]
+              start:
+                $ref: '#/components/schemas/TimeOfDay'
+              end:
+                $ref: '#/components/schemas/TimeOfDay'
+              member:
+                type: string
+                description: Name des Mitglieds, das gebucht hat. Personenbezogene Daten, nicht loggen.
+                examples: [Anna]
+
+    TimeOfDay:
+      type: string
+      pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+      description: Uhrzeit im Format HH:mm.
+      examples: ['17:00']
+
+    # ---------------------------------------------------------------- Favoriten (bereits umgesetzt)
+
+    FavoriteRequest:
+      type: object
+      required: [text]
+      additionalProperties: false
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: Der Text der Frage, höchstens 1000 Zeichen wie `AgentRequest.input`, damit sich jeder Favorit auch abschicken lässt. Leerzeichen am Anfang und Ende werden entfernt.
+
+    Favorite:
+      type: object
+      required: [id, text]
+      properties:
+        id:
+          type: integer
+          format: int64
+        text:
+          type: string
+
+    # ---------------------------------------------------------------- Fehler
+
+    ProblemDetail:
+      type: object
+      description: Fehlerantwort nach RFC 9457 (`application/problem+json`).
+      required: [status]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          default: about:blank
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+          description: Lesbare Meldung. Enthält keine Texte der Benutzer und keine Interna des Servers.
+        instance:
+          type: string
+          format: uri-reference
+        requestId:
+          $ref: '#/components/schemas/RequestId'
+        errors:
+          type: array
+          description: 'Nur bei Validierungsfehlern (400): welche Felder ungültig sind.'
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field:
+                type: string
+              message:
+                type: string

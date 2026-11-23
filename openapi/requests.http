@@ -1,0 +1,56 @@
+### Beispielaufrufe für das Backend (IntelliJ HTTP-Client; in Postman/Insomnia/Bruno lässt sich
+### stattdessen agent-api.yaml importieren). Voraussetzung: App läuft auf Port 8080.
+
+### Frage mit einem Tool
+POST http://localhost:8080/api/v1/agent
+Content-Type: application/json
+
+{"input": "Welche Courts sind morgen frei?"}
+
+### Zwei Tools in einer Anfrage
+POST http://localhost:8080/api/v1/agent
+Content-Type: application/json
+
+{"input": "Welche Courts sind am Dienstag frei und wer hat da gebucht?"}
+
+### Rückfrage (es fehlt das Datum): status "message"
+POST http://localhost:8080/api/v1/agent
+Content-Type: application/json
+
+{"input": "Welche Courts sind frei?"}
+
+### Kein Tool passt: status "message"
+POST http://localhost:8080/api/v1/agent
+Content-Type: application/json
+
+{"input": "Wie wird das Wetter morgen?"}
+
+### Fehler 400: leere Frage
+POST http://localhost:8080/api/v1/agent
+Content-Type: application/json
+
+{"input": "  "}
+
+### Fehler 415: falscher Content-Type
+POST http://localhost:8080/api/v1/agent
+Content-Type: text/plain
+
+Welche Courts sind morgen frei?
+
+### Fehler 405: GET statt POST
+GET http://localhost:8080/api/v1/agent
+
+### Favoriten: speichern
+POST http://localhost:8080/api/v1/favorites
+Content-Type: application/json
+
+{"text": "Welche Courts sind morgen frei?"}
+
+### Favoriten: auflisten
+GET http://localhost:8080/api/v1/favorites
+
+### Favorit löschen (ID aus der Liste einsetzen)
+DELETE http://localhost:8080/api/v1/favorites/1
+
+### Favorit als benutzt markieren (ID aus der Liste einsetzen)
+POST http://localhost:8080/api/v1/favorites/1/used

@@ -1,0 +1,45 @@
+databaseChangeLog:
+  - changeSet:
+      id: 001-create-favorite
+      author: agent-java
+      changes:
+        - createTable:
+            tableName: favorite
+            columns:
+              - column:
+                  name: id
+                  type: bigint
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: user_id
+                  type: varchar(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: text
+                  type: varchar(2000)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: timestamp with time zone
+                  constraints:
+                    nullable: false
+              - column:
+                  name: last_used_at
+                  type: timestamp with time zone
+                  constraints:
+                    nullable: false
+        - addUniqueConstraint:
+            tableName: favorite
+            columnNames: user_id, text
+            constraintName: uq_favorite_user_text
+        - createIndex:
+            tableName: favorite
+            indexName: idx_favorite_user_id
+            columns:
+              - column:
+                  name: user_id
